@@ -250,7 +250,7 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 	ServiceState old_state = GetStateRaw();
 	StateType old_stateType = GetStateType();
 	long old_attempt = GetCheckAttempt();
-	bool recovery;
+	bool soft_recovery, hard_recovery = false; //recovery must explicitely happen
 
 	if (old_cr && cr->GetExecutionStart() < old_cr->GetExecutionStart())
 		return;
@@ -264,12 +264,20 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 	long attempt = 1;
 
 	if (!old_cr) {
-		recovery = false;
 		SetStateType(StateTypeHard);
 	} else if (cr->GetState() == ServiceOK) {
 		if (old_state == ServiceOK && old_stateType == StateTypeSoft) {
 			SetStateType(StateTypeHard); // SOFT OK -> HARD OK
-			recovery = true;
+		}
+
+		if (old_state != ServiceOK) {
+			// SOFT NOT-OK -> SOFT OK
+			if (old_stateType == StateTypeSoft)
+				soft_recovery = true;
+
+			// HARD NOT-OK -> HARD OK
+			if (old_stateType == StateTypeHard)
+				hard_recovery = true;
 		}
 
 		ResetNotificationNumbers();
@@ -283,8 +291,6 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 		} else {
 			attempt = old_attempt;
 		}
-
-		recovery = false;
 
 		switch (cr->GetState()) {
 			case ServiceOK:
@@ -371,6 +377,9 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 	if (old_state == ServiceOK && old_stateType == StateTypeSoft)
 		send_notification = false; /* Don't send notifications for SOFT-OK -> HARD-OK. */
 
+	if (soft_recovery)
+		send_notification = false; /* Don't send notifications for SOFT-NOT-OK -> SOFT-OK */
+
 	bool send_downtime_notification = (GetLastInDowntime() != in_downtime);
 	SetLastInDowntime(in_downtime);
 
@@ -424,7 +433,7 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 		Log(LogNotice, "Checkable", "State Change: Checkable " + GetName() + " soft state change from " + old_state_str + " to " + new_state_str + " detected.");
 	}
 
-	if (GetStateType() == StateTypeSoft || hardChange || recovery)
+	if (GetStateType() == StateTypeSoft || hardChange || soft_recovery || hard_recovery)
 		ExecuteEventHandler();
 
 	if (send_downtime_notification)
@@ -441,7 +450,7 @@ void Checkable::ProcessCheckResult(const CheckResult::Ptr& cr, const MessageOrig
 		Log(LogNotice, "Checkable", "Flapping: Checkable " + GetName() + " stopped flapping (" + Convert::ToString(GetFlappingThreshold()) + "% >= " + Convert::ToString(GetFlappingCurrent()) + "%).");
 		OnFlappingChanged(GetSelf(), FlappingStopped);
 	} else if (send_notification)
-		OnNotificationsRequested(GetSelf(), recovery ? NotificationRecovery : NotificationProblem, cr, "", "");
+		OnNotificationsRequested(GetSelf(), (soft_recovery || hard_recovery) ? NotificationRecovery : NotificationProblem, cr, "", "");
 }
 
 bool Checkable::IsCheckPending(void) const
